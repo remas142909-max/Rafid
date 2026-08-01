@@ -325,7 +325,7 @@ erDiagram
 
 ### 5.2 Complete SQL Schema | قاعدة البيانات
 
-Only the two new tables are shown below — the rest of the schema (users, business_profiles, bank_accounts, transactions, bank_policies, readiness_assessments, assessment_factors, recommendations) is unchanged.
+Full SQL schema for the RAFID database, including all core tables:
 
 ```sql
 -- ============================================================
