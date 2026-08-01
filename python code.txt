@@ -1,0 +1,136 @@
+#F1: Cash Flow Stability (25%)
+
+
+def calculate_cash_flow_stability(transactions, months=6):
+    monthly_net = []
+    for month in last_n_months(transactions, months):
+        inflows = sum(t.amount for t in month if t.type == 'CREDIT')
+        outflows = sum(t.amount for t in month if t.type == 'DEBIT')
+        monthly_net.append(inflows - outflows)
+    
+    mean_net = np.mean(monthly_net)
+    std_net = np.std(monthly_net)
+    cv = std_net / abs(mean_net) if mean_net != 0 else float('inf')  # Coefficient of Variation
+    
+    # Lower CV = higher stability
+    stability_score = max(0, 100 - (cv * 100))
+    return min(100, stability_score)
+
+
+#F2: Account Separation (20%)
+def calculate_account_separation(transactions, business_profile):
+    personal_keywords = ['supermarket', 'restaurant_personal', 'fuel_personal', 'family']
+    business_keywords = ['supplier', 'inventory', 'rent_office', 'salary', 'wholesale']
+    
+    total = len(transactions)
+    personal_count = sum(1 for t in transactions if is_personal(t, personal_keywords))
+    business_count = sum(1 for t in transactions if is_business(t, business_keywords))
+    mixed_count = total - personal_count - business_count
+    
+    # Mixing ratio
+    mixing_ratio = mixed_count / total if total > 0 else 0
+    separation_score = (1 - mixing_ratio) * 100
+    
+    # Bonus for clear business-only account
+    if business_count / total > 0.85 and personal_count / total < 0.05:
+        separation_score = min(100, separation_score * 1.15)
+    
+    return separation_score
+
+
+#F3: Revenue Consistency (20%)
+def calculate_revenue_consistency(transactions, months=6):
+    monthly_revenue = []
+    for month in last_n_months(transactions, months):
+        revenue = sum(t.amount for t in month if t.type == 'CREDIT' and t.is_business)
+        monthly_revenue.append(revenue)
+    
+    # Trend analysis
+    x = np.arange(len(monthly_revenue))
+    slope, intercept = np.polyfit(x, monthly_revenue, 1)
+    
+    # Consistency: low variance + positive or stable trend
+    mean_rev = np.mean(monthly_revenue)
+    std_rev = np.std(monthly_revenue)
+    cv = std_rev / mean_rev if mean_rev > 0 else 1
+    
+    # Penalize declining trend
+    trend_penalty = max(0, -slope * 5)  # if slope is negative
+    
+    consistency = max(0, 100 - (cv * 50) - trend_penalty)
+    return min(100, consistency)
+
+
+#F4: Business Maturity & Sector (15%)
+def calculate_maturity_score(business_profile, sector_data):
+    age_months = months_since(business_profile.establishment_date)
+    
+    # Age score (logarithmic - early months matter more)
+    age_score = min(100, 30 * np.log(age_months + 1))
+    
+    # Sector viability (from external data)
+    sector_viability = sector_data.get(business_profile.sector, 50)
+    
+    # Employees count (proxy for scale)
+    employee_score = min(100, business_profile.employees_count * 10)
+    
+    return (age_score * 0.4 + sector_viability * 0.4 + employee_score * 0.2)
+
+
+#F5: Risk Profile (10%)
+def calculate_risk_score(transactions, user_profile):
+    risks = []
+    
+    # Risk 1: Large unexplained withdrawals (>30% of monthly revenue)
+    risks.append(detect_large_withdrawals(transactions))
+    
+    # Risk 2: Negative balance frequency
+    risks.append(negative_balance_frequency(transactions))
+    
+    # Risk 3: High dependency on single client (>60% revenue from one source)
+    risks.append(client_concentration_risk(transactions))
+    
+    # Risk 4: Seasonal volatility without explanation
+    risks.append(seasonal_volatility_risk(transactions))
+    
+    # Average risk (0 = no risk, 100 = high risk)
+    avg_risk = np.mean(risks)
+    return 100 - avg_risk  # Convert to score (higher = better)
+
+
+#F6: User Engagement & Data Quality (10%)
+def calculate_engagement_score(user):
+    score = 0
+    if user.has_connected_bank: score += 40
+    if user.has_completed_profile: score += 30
+    if user.has_uploaded_documents: score += 20
+    if user.has_re_evaluated: score += 10
+    return score
+
+#Sector Adjustment
+sector_multipliers = {
+    'retail': 1.0,
+    'restaurant': 0.95,      # Higher risk
+    'ecommerce': 1.05,       # Growing sector
+    'services': 1.0,
+    'manufacturing': 1.1,    # Preferred by banks
+    'construction': 0.9,     # Cyclical
+}
+
+#Time Decay Factor
+def time_decay_factor(assessment_age_days):
+    # Recent assessments are more reliable
+    if assessment_age_days <= 7: return 1.0
+    if assessment_age_days <= 30: return 0.95
+    if assessment_age_days <= 90: return 0.85
+    return 0.7  # Re-evaluation required
+
+
+#Risk Penalty
+risk_penalties = {
+    'fraud_suspected': 50,
+    'negative_balance_frequent': 20,
+    'account_mixing_severe': 15,
+    'documentation_missing': 10,
+}
+

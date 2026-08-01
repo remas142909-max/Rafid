@@ -1,0 +1,356 @@
+-- ============================================================
+-- RAFID - Complete Database Schema
+-- FinTech Funding Readiness Engine
+-- ============================================================
+
+-- -----------------------------------------------------------
+-- 1. EXTENSIONS
+-- -----------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- -----------------------------------------------------------
+-- 2. ENUM TYPES
+-- -----------------------------------------------------------
+CREATE TYPE user_kyc_status AS ENUM ('pending', 'verified', 'rejected');
+CREATE TYPE business_sector AS ENUM ('retail', 'restaurant', 'ecommerce', 'services', 'manufacturing', 'construction', 'technology', 'healthcare', 'other');
+CREATE TYPE account_type AS ENUM ('checking', 'savings', 'business');
+CREATE TYPE transaction_type AS ENUM ('credit', 'debit');
+CREATE TYPE risk_level AS ENUM ('low', 'medium', 'high', 'critical');
+CREATE TYPE assessment_status AS ENUM ('active', 'expired', 'superseded');
+CREATE TYPE recommendation_category AS ENUM ('revenue', 'expenses', 'organization', 'documentation', 'planning', 'bank_requirement');
+CREATE TYPE audit_action_type AS ENUM ('create', 'update', 'delete', 'view', 'export', 'login', 'logout');
+CREATE TYPE external_source_type AS ENUM ('commercial_registry', 'credit_bureau', 'economic_indicators', 'sector_data', 'open_data');
+
+-- -----------------------------------------------------------
+-- 3. USERS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    phone VARCHAR(20) UNIQUE,
+    full_name VARCHAR(255),
+    kyc_status user_kyc_status DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 4. BUSINESS PROFILES TABLE
+-- -----------------------------------------------------------
+CREATE TABLE business_profiles (
+    profile_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    business_name VARCHAR(255),
+    sector business_sector,
+    establishment_date DATE,
+    employees_count INT CHECK (employees_count >= 0),
+    revenue_model VARCHAR(100),
+    registration_no VARCHAR(100),
+    has_financial_statements BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 5. BANK ACCOUNTS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE bank_accounts (
+    account_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    account_number_hash VARCHAR(255) NOT NULL,
+    bank_code VARCHAR(10),
+    account_type account_type,
+    balance DECIMAL(15,2) DEFAULT 0.00,
+    currency CHAR(3) DEFAULT 'SAR',
+    opened_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 6. TRANSACTIONS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE transactions (
+    transaction_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id UUID NOT NULL REFERENCES bank_accounts(account_id) ON DELETE CASCADE,
+    amount DECIMAL(15,2) NOT NULL,
+    currency CHAR(3) DEFAULT 'SAR',
+    transaction_type transaction_type NOT NULL,
+    description TEXT,
+    category_ml VARCHAR(50),
+    category_confidence DECIMAL(4,3) CHECK (category_confidence BETWEEN 0 AND 1),
+    is_personal BOOLEAN,
+    is_business BOOLEAN,
+    is_anomaly BOOLEAN DEFAULT FALSE,
+    anomaly_score DECIMAL(4,3) CHECK (anomaly_score BETWEEN 0 AND 1),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 7. BANK POLICIES TABLE (الجهة 1 في العلاقة 1:N)
+-- -----------------------------------------------------------
+CREATE TABLE bank_policies (
+    policy_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    policy_name VARCHAR(255) NOT NULL,
+    min_readiness_score INT CHECK (min_readiness_score BETWEEN 0 AND 100),
+    max_risk_level risk_level,
+    min_monthly_revenue DECIMAL(15,2),
+    min_account_age_months INT,
+    sector_restrictions JSONB,
+    scoring_weights JSONB,  -- {"cash_flow": 0.25, "account_separation": 0.20, ...}
+    is_active BOOLEAN DEFAULT TRUE,
+    version VARCHAR(10) DEFAULT '1.0',
+    effective_from TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    effective_to TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 8. READINESS ASSESSMENTS TABLE (الجهة N في العلاقة 1:N)
+-- -----------------------------------------------------------
+CREATE TABLE readiness_assessments (
+    assessment_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    profile_id UUID REFERENCES business_profiles(profile_id),
+    applied_policy_id UUID REFERENCES bank_policies(policy_id),  -- ← FK إلى الجهة 1
+    policy_version VARCHAR(10),  -- نسخة السياسة وقت التقييم (للأرشيف)
+    readiness_score INT CHECK (readiness_score BETWEEN 0 AND 100),
+    risk_level risk_level,
+    assessment_version VARCHAR(10) DEFAULT '1.0',
+    status assessment_status DEFAULT 'active',
+    expires_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 9. ASSESSMENT FACTORS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE assessment_factors (
+    factor_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    assessment_id UUID NOT NULL REFERENCES readiness_assessments(assessment_id) ON DELETE CASCADE,
+    factor_name VARCHAR(50) NOT NULL,
+    weight DECIMAL(4,2) CHECK (weight BETWEEN 0 AND 1),
+    raw_score DECIMAL(5,2) CHECK (raw_score BETWEEN 0 AND 100),
+    weighted_score DECIMAL(5,2),
+    explanation TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 10. RECOMMENDATIONS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE recommendations (
+    recommendation_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    assessment_id UUID NOT NULL REFERENCES readiness_assessments(assessment_id) ON DELETE CASCADE,
+    priority INT CHECK (priority BETWEEN 1 AND 5),
+    category recommendation_category,
+    action_title VARCHAR(255),
+    action_description TEXT,
+    expected_impact VARCHAR(100),
+    estimated_duration_days INT,
+    is_completed BOOLEAN DEFAULT FALSE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- -----------------------------------------------------------
+-- 11. CONVERSATIONS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE conversations (
+    conversation_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id UUID DEFAULT uuid_generate_v4(),
+    message_text TEXT,
+    intent VARCHAR(50),
+    sentiment VARCHAR(20),
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    is_bot BOOLEAN DEFAULT FALSE
+);
+
+-- -----------------------------------------------------------
+-- 12. AUDIT LOGS TABLE
+-- -----------------------------------------------------------
+CREATE TABLE audit_logs (
+    log_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(user_id),
+    action_type audit_action_type,
+    entity_type VARCHAR(50),
+    entity_id UUID,
+    old_value JSONB,
+    new_value JSONB,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    ip_address INET
+);
+
+-- -----------------------------------------------------------
+-- 13. EXTERNAL DATA TABLE
+-- -----------------------------------------------------------
+CREATE TABLE external_data (
+    external_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(user_id),
+    source_type external_source_type,
+    data_payload JSONB,
+    fetched_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    reliability_score DECIMAL(4,3) CHECK (reliability_score BETWEEN 0 AND 1)
+);
+
+-- -----------------------------------------------------------
+-- 14. INDEXES FOR PERFORMANCE
+-- -----------------------------------------------------------
+CREATE INDEX idx_transactions_account ON transactions(account_id);
+CREATE INDEX idx_transactions_timestamp ON transactions(timestamp);
+CREATE INDEX idx_transactions_anomaly ON transactions(is_anomaly) WHERE is_anomaly = TRUE;
+CREATE INDEX idx_assessments_user ON readiness_assessments(user_id);
+CREATE INDEX idx_assessments_policy ON readiness_assessments(applied_policy_id);
+CREATE INDEX idx_factors_assessment ON assessment_factors(assessment_id);
+CREATE INDEX idx_recommendations_assessment ON recommendations(assessment_id);
+CREATE INDEX idx_conversations_user ON conversations(user_id);
+CREATE INDEX idx_audit_logs_user ON audit_logs(user_id);
+CREATE INDEX idx_audit_logs_timestamp ON audit_logs(timestamp);
+
+-- -----------------------------------------------------------
+-- 15. TRIGGER: Auto-update updated_at
+-- -----------------------------------------------------------
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_business_profiles_updated_at BEFORE UPDATE ON business_profiles
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_bank_accounts_updated_at BEFORE UPDATE ON bank_accounts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_bank_policies_updated_at BEFORE UPDATE ON bank_policies
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- -----------------------------------------------------------
+-- 16. SAMPLE DATA: Bank Policy (السياسة الافتراضية)
+-- -----------------------------------------------------------
+INSERT INTO bank_policies (
+    policy_id,
+    policy_name,
+    min_readiness_score,
+    max_risk_level,
+    min_monthly_revenue,
+    min_account_age_months,
+    sector_restrictions,
+    scoring_weights,
+    version
+) VALUES (
+    uuid_generate_v4(),
+    'SME_Funding_Standard_2026',
+    70,
+    'high',
+    15000.00,
+    6,
+    '["retail", "restaurant", "ecommerce", "services", "manufacturing"]'::JSONB,
+    '{
+        "cash_flow_stability": 0.25,
+        "account_separation": 0.20,
+        "revenue_consistency": 0.20,
+        "business_age_sector": 0.15,
+        "risk_profile": 0.10,
+        "user_engagement": 0.10
+    }'::JSONB,
+    '1.0'
+);
+
+-- -----------------------------------------------------------
+-- 17. VIEW: Latest Assessment per User
+-- -----------------------------------------------------------
+CREATE VIEW latest_assessments AS
+SELECT DISTINCT ON (user_id)
+    assessment_id,
+    user_id,
+    readiness_score,
+    risk_level,
+    applied_policy_id,
+    policy_version,
+    created_at
+FROM readiness_assessments
+WHERE status = 'active'
+ORDER BY user_id, created_at DESC;
+
+-- -----------------------------------------------------------
+-- 18. VIEW: Assessment with Policy Details
+-- -----------------------------------------------------------
+CREATE VIEW assessment_policy_summary AS
+SELECT 
+    ra.assessment_id,
+    ra.user_id,
+    ra.readiness_score,
+    ra.risk_level,
+    ra.policy_version,
+    bp.policy_name,
+    bp.min_readiness_score AS policy_min_score,
+    bp.max_risk_level AS policy_max_risk,
+    CASE 
+        WHEN ra.readiness_score >= bp.min_readiness_score 
+             AND ra.risk_level <= bp.max_risk_level 
+        THEN TRUE 
+        ELSE FALSE 
+    END AS meets_policy_requirements
+FROM readiness_assessments ra
+LEFT JOIN bank_policies bp ON ra.applied_policy_id = bp.policy_id;
+
+-- -----------------------------------------------------------
+-- 19. FUNCTION: Calculate Engagement Score (F6)
+-- -----------------------------------------------------------
+CREATE OR REPLACE FUNCTION calculate_engagement_score(p_user_id UUID)
+RETURNS INT AS $$
+DECLARE
+    v_score INT := 0;
+BEGIN
+    -- Connected bank account (+40)
+    IF EXISTS (SELECT 1 FROM bank_accounts WHERE user_id = p_user_id AND is_active = TRUE) THEN
+        v_score := v_score + 40;
+    END IF;
+    
+    -- Completed profile (+30)
+    IF EXISTS (SELECT 1 FROM business_profiles WHERE user_id = p_user_id) THEN
+        v_score := v_score + 30;
+    END IF;
+    
+    -- Uploaded documents (+20) - simulated via external_data
+    IF EXISTS (SELECT 1 FROM external_data WHERE user_id = p_user_id AND source_type = 'commercial_registry') THEN
+        v_score := v_score + 20;
+    END IF;
+    
+    -- Re-evaluated before (+10)
+    IF (SELECT COUNT(*) FROM readiness_assessments WHERE user_id = p_user_id) > 1 THEN
+        v_score := v_score + 10;
+    END IF;
+    
+    RETURN v_score;
+END;
+$$ LANGUAGE plpgsql;
+
+-- -----------------------------------------------------------
+-- 20. ROW LEVEL SECURITY (RLS) - Optional but recommended
+-- -----------------------------------------------------------
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE business_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bank_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE readiness_assessments ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Users can only see their own data
+CREATE POLICY user_isolation ON users
+    FOR ALL
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+
+-- -----------------------------------------------------------
+-- END OF SCHEMA
+-- -----------------------------------------------------------
