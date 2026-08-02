@@ -1011,7 +1011,7 @@ def detect_anomalies(transactions):
 | Name | Role | Responsibility |
 |------|------|-----------------|
 | [Rimas Aldosari] |UI/UX Designer | UI/UX Design, Prototyping, Project Concept, Contributed to Code, Repository Management|
-| [Amani Alshahrany] |Developer | Code Development, System Architecture, |
+| [Amani Alshahrany] |Developer |System Architecture, Code,Database, APIs, Data, NLP,Classification,Scoring |
 | [Layan Almqati] | UI/UX Designer | UI/UX Design, Prototyping |
 | [Fatima Obaid] | Contributor | Contributed to Project Concept |
 | [Wateen Alanzi] | Collector |Data Collection |
